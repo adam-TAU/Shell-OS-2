@@ -87,7 +87,7 @@ int prepare(void);
 int finalize(void);
 
 
-/******************* STATIC FUNCTION DECLARATIONS *******************/
+/******************* STATIC AUXILIARY FUNCTION DECLARATIONS *******************/
 
 /* Duplicates file descriptor safely.
  * On error, terminates process if is a child process.
@@ -139,8 +139,34 @@ static int index_of(int count, char** arglist, char* string);
 
 
 
+/******************** STATIC MAIN MECHANISM'S FUNCTION DECLARATIONS **************/
 
-/******************** STATIC MECHANISM'S FUNCTION DEFINITIONS ********************/
+/* Runs the command in the background.
+ * <count> is the amonut of command line arguments that were in the issued command.
+ * <arglist> is the parsed array of command line arguments.
+ * Returns 0 on success, and -1 on failure. */
+static int handle_background(int count, char** arglist);
+
+/* Perform the pipe command.
+ * <index> is the index of the pipe character in the word array <arglist> of the command line arguments.
+ * <count> is the amonut of command line arguments that were in the issued command.
+ * <arglist> is the parsed array of command line arguments.
+ * Returns 0 on success, and -1 on failure. */
+static int handle_pipe(int count, char** arglist, int index);
+
+/* Perform the output redirection command.
+ * <count> is the amonut of command line arguments that were in the issued command.
+ * <arglist> is the parsed array of command line arguments.
+ * Returns 0 on success, and -1 on failure. */
+static int handle_output_redirection(int count, char** arglist);
+
+/**********************************************************************************/
+
+
+
+
+
+/******************** STATIC AUXILIARY FUNCTION DEFINITIONS ********************/
 
 static int dup2_safe(int new_fd, int old_fd, bool is_child) {
 	if (dup2(new_fd, old_fd) < 0) {
@@ -246,10 +272,65 @@ static pid_t execute(char** argv, bool background, int output_fd, int input_fd) 
 /***************************************************************/
 
 
-/***************************** STATIC AUXILIARY FUNCTION DEFINITIONS ****************************/
+/***************************** STATIC MAIN MECHANISM'S FUNCTION DEFINITIONS ****************************/
+static int handle_pipe(int count, char** arglist, int index) {
+	pid_t pid1, pid2;
+	int status;
+	
+	/* Creating the pipe named <pfds> */
+	int pfds[2];
+	pipe(pfds);
+	
+	/* Executing the first program */
+	arglist[index] = NULL; // nullifying the arglist at the pipe stage, so that the first process would see it as the end of its command line argument list
+	if ( (pid1 = execute(arglist, true, pfds[1], -1)) < 0) { // executing the program as a background process with its output redirected to the pipe[1] writing pipe
+		return -1;
+	}
+	
+	/* Executing the second program */
+	if ( (pid2 = execute(arglist + index + 1, true, -1, pfds[0])) < 0) { // executing the program as a background process with its input redirected to the pipe[0] reading pipe
+		return -1;
+	}
+	
+	/* Waiting for both processes to finish */
+	waitpid(pid1, &status, 0);
+	waitpid(pid2, &status, 0);
+	
+	/* Closing the pipe */
+	if (close_safe(pfds[0], false) < 0) return -1;
+	if (close_safe(pfds[1], false) < 0) return -1;
+	
+	return 0;
+}
+
+static int handle_output_redirection(int count, char** arglist) {
+
+	/* Open the output file */
+	int output_fd;
+	if ( (output_fd = open_safe(arglist[count - 1], false)) < 0) {
+		return -1;
+	}
+	
+	/* Format the arglist according to our needs */
+	arglist[count - 1] = NULL; // the filename
+	arglist[count - 2] = NULL; // the ">>" symbol
+	
+	/* Run the program */
+	if (execute(arglist, false, output_fd, -1) < 0) {
+		return -1;
+	}
+	
+	return 0;
+}
 
 
-
+static int handle_background(int count, char** arglist) {
+	arglist[count - 1] = NULL; // removing "&" from the arglist
+	if (execute(arglist, true, -1, -1) < 0) { // executing the program as a background process without output/input redirections
+		return -1;
+	}
+	return 0;
+}
 
 
 
@@ -259,57 +340,19 @@ int process_arglist(int count, char** arglist) {
 	int index;
 	
 	if ( (index = contains(count, arglist, "&")) >= 0 ) { // a background process
-		arglist[count - 1] = NULL; // removing "&" from the arglist
-		
-		if (execute(arglist, true, -1, -1) < 0) { // executing the program as a background process without output/input redirections
+		if (handle_background(count, arglist) < 0) {
 			return 0;
 		}
-		
-	} else if ( (index = contains(count, arglist, "|")) >= 0 ) { // piped processes running concurrently
-		pid_t pid1, pid2;
-		int status;
-		
-		/* Creating the pipe named <pfds> */
-		int pfds[2];
-		pipe(pfds);
-		
-		/* Executing the first program */
-		arglist[index] = NULL; // nullifying the arglist at the pipe stage, so that the first process would see it as the end of its command line argument list
-		if ( (pid1 = execute(arglist, true, pfds[1], -1)) < 0) { // executing the program as a background process with its output redirected to the pipe[1] writing pipe
+	} else if ( (index = contains(count, arglist, "|")) >= 0 ) { // piped processes running concurrently		
+		if (handle_pipe(count, arglist, index) < 0) {
 			return 0;
 		}
-		
-		/* Executing the second program */
-		if ( (pid2 = execute(arglist + index + 1, true, -1, pfds[0])) < 0) { // executing the program as a background process with its input redirected to the pipe[0] reading pipe
-			return 0;
-		}
-		
-		/* Waiting for both processes to finish */
-		waitpid(pid1, &status, 0);
-		waitpid(pid2, &status, 0);
-		
-		/* Closing the pipe */
-		if (close_safe(pfds[0], false) < 0) return -1;
-		if (close_safe(pfds[1], false) < 0) return -1;
-
 	} else if ( (index = contains(count, arglist, ">>")) >= 0 ) { // output redirection process
-		/* Open the output file */
-		int output_fd;
-		if ( (output_fd = open_safe(arglist[count - 1], false)) < 0) {
-			return -1;
-		}
-		
-		/* Format the arglist according to our needs */
-		arglist[count - 1] = NULL; // the filename
-		arglist[count - 2] = NULL; // the ">>" symbol
-		
-		/* Run the program */
-		if (execute(arglist, false, output_fd, -1) < 0) {
+		if (handle_output_redirection(count, arglist) < 0) {
 			return 0;
 		}
 		
 	} else { // regularly executing a program with a non-complex command line argument array
-	
 		if (execute(arglist, false, -1, -1) < 0) {
 			return 0;
 		} 
