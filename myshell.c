@@ -179,9 +179,11 @@ static int waitpid_safe(pid_t pid, int* status, int options) {
 }
 
 static int dup2_safe(int new_fd, int old_fd, bool is_child) {
-	if (dup2(new_fd, old_fd) < 0) {
-		print_err(DUP_ERR, is_child);
-		return -1;
+	if (new_fd >= 0) {
+		if (dup2(new_fd, old_fd) < 0) {
+			print_err(DUP_ERR, is_child);
+			return -1;
+		}
 	}
 	
 	return 0;
@@ -222,10 +224,20 @@ static void print_err(char* error_message, bool is_child) {
 }
 
 static int contains(int count, char** arglist, char* string) {
-	if (strcmp(string, "&")) {
-		return strcmp(arglist[count - 1], "&");
-	} else if (strcmp(string, ">>")) {
-		return strcmp(arglist[count - 2], ">>");
+	if (strcmp(string, "&") == 0) {
+		if ( strcmp(arglist[count - 1], "&") == 0 ) {
+			return count - 1;
+		} else {
+			return -1;
+		}
+		
+	} else if (strcmp(string, ">>") == 0) {
+		if ( strcmp(arglist[count - 2], ">>") == 0 ) {
+			return count - 2;
+		} else {
+			return -1;
+		}
+	
 	} else { // if it's a pipe operation, or a non "output redirection" / "background process", then the placement will be random
 		return index_of(count, arglist, string);
 	}
@@ -235,7 +247,7 @@ static int index_of(int count, char** arglist, char* string) {
 	int i;
 
 	for (i = 0; i < count; i++) {
-		if (strcmp(arglist[i], string)) {
+		if (strcmp(arglist[i], string) == 0) {
 			return i;
 		}
 	}
@@ -400,7 +412,7 @@ int process_arglist(int count, char** arglist) {
 			return 0;
 		}
 	}
-
+	
 	return 1;
 }
 
