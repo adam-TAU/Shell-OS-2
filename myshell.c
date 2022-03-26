@@ -39,22 +39,7 @@
 1. User commands might be invalid (e.g., a non-existing program or redirecting to a file without
 write permission). Such cases should be treated as an error in the child process (i.e., they must
 not terminate the shell).
-
-2. Assume that the results of the provided parser are correct.
-
-3. Actual implementations of the operations:
 	
-	b. Assume background processes don’t read input (stdin).
-	
-	c. Use the same array for all execvp() calls by referencing items in arglist. There’s no need
-	to allocate a new array and duplicate parts of the original array.
-	
-	d. If arglist contains the word "|" (a single pipe symbol), run two child processes, with the
-	output (stdout) of the first process (executing the command that appears before the pipe)
-	piped to the input (stdin) of the second process (executing the command that appears after
-	the pipe).
-	
-
 4. figure out the use for wait and waitpid
 
 5. If an error occurs in a signal handler in the shell parent process, there’s no need to notify
@@ -67,14 +52,10 @@ not considered an actual error that requires exiting the shell:
 • EINTR. (You can also avoid an EINTR “error” in the first place. Hint: read about the
 SA_RESTART option in sigaction.)
 
-7. In the original (shell/parent) process, process_arglist() should return 1 if no error occurs. (This
-makes sure the shell continues processing user commands.) If process_arglist() encounters an
-error, it should print an error message and return 0. (See below for what constitutes an error.)
-
 8. The process_arglist() function should not return until every foreground child process it
 created exits.
 
-****************************************************************************************/
+*********************************************************************************************/
 
 
 // arglist - a list of char* arguments (words) provided by the user
@@ -87,7 +68,7 @@ int prepare(void);
 int finalize(void);
 
 
-/******************* STATIC AUXILIARY FUNCTION DECLARATIONS *******************/
+/************************** STATIC AUXILIARY FUNCTION DECLARATIONS **************************/
 
 /* Duplicates file descriptor safely.
  * On error, terminates process if is a child process.
@@ -135,11 +116,18 @@ static int contains(int count, char** arglist, char* string);
  * If the returned integer is higher than count, then that is an undefined behavior.
  */
 static int index_of(int count, char** arglist, char* string);
-/********************************************************************/
+/************************************************************************************************/
 
 
 
-/******************** STATIC MAIN MECHANISM'S FUNCTION DECLARATIONS **************/
+
+
+
+
+
+
+
+/*************************** STATIC MAIN MECHANISM'S FUNCTION DECLARATIONS *********************/
 
 /* Runs the command in the background.
  * <count> is the amonut of command line arguments that were in the issued command.
@@ -159,15 +147,15 @@ static int handle_pipe(int count, char** arglist, int index);
  * <arglist> is the parsed array of command line arguments.
  * Returns 0 on success, and -1 on failure. */
 static int handle_output_redirection(int count, char** arglist);
-
-/**********************************************************************************/
-
+/**********************************************************************************************/
 
 
 
 
-/******************** STATIC AUXILIARY FUNCTION DEFINITIONS ********************/
 
+
+
+/*************************** STATIC AUXILIARY FUNCTION DEFINITIONS ***************************/
 static int dup2_safe(int new_fd, int old_fd, bool is_child) {
 	if (dup2(new_fd, old_fd) < 0) {
 		print_err(DUP_ERR, is_child);
@@ -236,7 +224,6 @@ static int index_of(int count, char** arglist, char* string) {
 static pid_t execute(char** argv, bool background, int output_fd, int input_fd) {
 	/* This functions's implementation is inspired by: http://www.csl.mtu.edu/cs4411.ck/www/NOTES/process/fork/exec.html */
 	pid_t  pid;
-	int status;
 
 	if ((pid = fork()) < 0) { // fork a child process:
 		print_err("*** ERROR: forking child process failed\n", false);
@@ -257,19 +244,19 @@ static pid_t execute(char** argv, bool background, int output_fd, int input_fd) 
 		}
 		
 		/* Execute */
-		if (execvp(*argv, argv) < 0) {     /* execute the command  */
+		if (execvp(*argv, argv) < 0) { // execute the command
 			print_err("*** ERROR: exec failed\n", true);
-			exit(1);
 		}
 	
-	}
-	else if (!background) { // for the parent:
-		while (wait(&status) != pid); // wait for completion 
 	}
 
 	return pid;
 }
-/***************************************************************/
+/*******************************************************************************************************/
+
+
+
+
 
 
 /***************************** STATIC MAIN MECHANISM'S FUNCTION DEFINITIONS ****************************/
@@ -304,6 +291,8 @@ static int handle_pipe(int count, char** arglist, int index) {
 }
 
 static int handle_output_redirection(int count, char** arglist) {
+	pid_t pid; 
+	int status;
 
 	/* Open the output file */
 	int output_fd;
@@ -316,9 +305,15 @@ static int handle_output_redirection(int count, char** arglist) {
 	arglist[count - 2] = NULL; // the ">>" symbol
 	
 	/* Run the program */
-	if (execute(arglist, false, output_fd, -1) < 0) {
+	if ( (pid = execute(arglist, false, output_fd, -1)) < 0) {
 		return -1;
 	}
+	
+	/* Wait for process to finish */
+	waitpid(pid, &status, 0);
+	
+	/* Closing the output file */
+	if (close_safe(output_fd, false) < 0) return -1;
 	
 	return 0;
 }
@@ -331,10 +326,15 @@ static int handle_background(int count, char** arglist) {
 	}
 	return 0;
 }
+/*******************************************************************************************/
 
 
 
-/******************* MAIN MECHANISM's FUNCTION DEFINITIONS *******************/
+
+
+
+
+/************************** MAIN MECHANISM's FUNCTION DEFINITIONS **************************/
 int process_arglist(int count, char** arglist) {
 	
 	int index;
@@ -374,5 +374,5 @@ int prepare(void) {
 int finalize(void) {
 	return 0;
 }
-/***************************************************************************/
+/*****************************************************************************************/
 
