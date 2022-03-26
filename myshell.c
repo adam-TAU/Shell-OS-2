@@ -18,6 +18,7 @@
 #define OPEN_ERR "An error with opening a file has occurred"
 #define CLOSE_ERR "An error with closing a file has occurred"
 #define DUP_ERR "An error duplicating a file descriptor (dup2) has occurred"
+#define WAIT_ERR "An error with waiting for a foreground process to exit has occurred"
 
 /* compile with: 
  * gcc -O3 -D_POSIX_C_SOURCE=200809 -Wall -std=c11 shell.c myshell.c
@@ -69,6 +70,11 @@ int finalize(void);
 
 
 /************************** STATIC AUXILIARY FUNCTION DECLARATIONS **************************/
+
+/* Waits for a specific process with the process id: <pid> to end.
+ * On success it will return 0, and on failure 1.
+ * ECHILD errors are ignored */
+static int waitpid_safe(pid_t pid, int* status, int options);
 
 /* Duplicates file descriptor safely.
  * On error, terminates process if is a child process.
@@ -147,6 +153,12 @@ static int handle_pipe(int count, char** arglist, int index);
  * <arglist> is the parsed array of command line arguments.
  * Returns 0 on success, and -1 on failure. */
 static int handle_output_redirection(int count, char** arglist);
+
+/* Perform the a regular non-complex command.
+ * <count> is the amonut of command line arguments that were in the issued command.
+ * <arglist> is the parsed array of command line arguments.
+ * Returns 0 on success, and -1 on failure. */
+static int handle_regular(int count, char** arglist)
 /**********************************************************************************************/
 
 
@@ -156,6 +168,15 @@ static int handle_output_redirection(int count, char** arglist);
 
 
 /*************************** STATIC AUXILIARY FUNCTION DEFINITIONS ***************************/
+
+static pid_t waitpid_safe(pid_t pid, int* status, int options) {
+	int wait_status;
+	
+	if ( (wait_status = waitpid(pid, &status, 0)) < 0 ) {
+		
+	}
+}
+
 static int dup2_safe(int new_fd, int old_fd, bool is_child) {
 	if (dup2(new_fd, old_fd) < 0) {
 		print_err(DUP_ERR, is_child);
@@ -280,8 +301,8 @@ static int handle_pipe(int count, char** arglist, int index) {
 	}
 	
 	/* Waiting for both processes to finish */
-	waitpid(pid1, &status, 0);
-	waitpid(pid2, &status, 0);
+	if ( waitpid_safe(pid1, &status, 0) < 0 ) return -1;
+	if ( waitpid_safe(pid2, &status, 0) < 0 ) return -1;
 	
 	/* Closing the pipe */
 	if (close_safe(pfds[0], false) < 0) return -1;
@@ -310,7 +331,7 @@ static int handle_output_redirection(int count, char** arglist) {
 	}
 	
 	/* Wait for process to finish */
-	waitpid(pid, &status, 0);
+	if ( waitpid_safe(pid, &status, 0) < 0 ) return -1;
 	
 	/* Closing the output file */
 	if (close_safe(output_fd, false) < 0) return -1;
@@ -324,11 +345,32 @@ static int handle_background(int count, char** arglist) {
 	if (execute(arglist, true, -1, -1) < 0) { // executing the program as a background process without output/input redirections
 		return -1;
 	}
+	// no need to wait for the process to end since it's a background process
+	return 0;
+}
+
+static int handle_regular(int count, char** arglist) {
+	pid_t pid;
+	int status;
+	
+	/* Executing the regular command */
+	if ( (pid = execute(arglist, false, -1, -1)) < 0) {
+		return -1;
+	}
+	
+	/* Waiting for the created foreground child process to exit */
+	if (waitpid_safe(pid, &status, 0) < 0 ) return -1; 
+	
 	return 0;
 }
 /*******************************************************************************************/
 
 
+
+/************************** STATIC SIGNAL HANDLERS FUNCTION DEFINITIONS ************************/
+void child_signal_handler(int sig) {
+
+}
 
 
 
@@ -353,9 +395,9 @@ int process_arglist(int count, char** arglist) {
 		}
 		
 	} else { // regularly executing a program with a non-complex command line argument array
-		if (execute(arglist, false, -1, -1) < 0) {
+		if (handle_regular(count, arglist) < 0) {
 			return 0;
-		} 
+		}
 	}
 
 	return 1;
@@ -364,7 +406,9 @@ int process_arglist(int count, char** arglist) {
 
 
 int prepare(void) {
-	signal(SIGCHLD, SIG_IGN); // Silently (and portably) terminate children who had stopped their execution.
+	struct sigaction sa_child;
+	sa_child.sa_handler = child_signal_handler;
+
 	signal(SIGINT, SIG_IGN); // the parent (shell) should not terminate upon SIGINT.
 	return 0;
 }
