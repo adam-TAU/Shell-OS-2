@@ -40,18 +40,19 @@
 1. User commands might be invalid (e.g., a non-existing program or redirecting to a file without
 write permission). Such cases should be treated as an error in the child process (i.e., they must
 not terminate the shell).
-	
-4. figure out the use for wait and waitpid
 
-5. If an error occurs in a signal handler in the shell parent process, there’s no need to notify
+2. If an error occurs in a signal handler in the shell parent process, there’s no need to notify
 process_arglist(). Just print a proper error message and terminate the shell process with
 exit(1).
 
-6. If wait/waitpid in the shell parent process return an error for one of the following reasons, it is
+3. If wait/waitpid in the shell parent process return an error for one of the following reasons, it is
 not considered an actual error that requires exiting the shell:
 • ECHILD
 • EINTR. (You can also avoid an EINTR “error” in the first place. Hint: read about the
 SA_RESTART option in sigaction.)
+
+
+*** Implement a personal handler for SIGCHLD.
 
 
 *********************************************************************************************/
