@@ -53,8 +53,6 @@ not considered an actual error that requires exiting the shell:
 • EINTR. (You can also avoid an EINTR “error” in the first place. Hint: read about the
 SA_RESTART option in sigaction.)
 
-8. The process_arglist() function should not return until every foreground child process it
-created exits.
 
 *********************************************************************************************/
 
@@ -158,7 +156,7 @@ static int handle_output_redirection(int count, char** arglist);
  * <count> is the amonut of command line arguments that were in the issued command.
  * <arglist> is the parsed array of command line arguments.
  * Returns 0 on success, and -1 on failure. */
-static int handle_regular(int count, char** arglist)
+static int handle_regular(int count, char** arglist);
 /**********************************************************************************************/
 
 
@@ -169,12 +167,14 @@ static int handle_regular(int count, char** arglist)
 
 /*************************** STATIC AUXILIARY FUNCTION DEFINITIONS ***************************/
 
-static pid_t waitpid_safe(pid_t pid, int* status, int options) {
+static int waitpid_safe(pid_t pid, int* status, int options) {
 	int wait_status;
 	
-	if ( (wait_status = waitpid(pid, &status, 0)) < 0 ) {
+	if ( (wait_status = waitpid(pid, status, 0)) < 0 ) {
 		
 	}
+	
+	return 0;
 }
 
 static int dup2_safe(int new_fd, int old_fd, bool is_child) {
@@ -301,8 +301,8 @@ static int handle_pipe(int count, char** arglist, int index) {
 	}
 	
 	/* Waiting for both processes to finish */
-	if ( waitpid_safe(pid1, &status, 0) < 0 ) return -1;
-	if ( waitpid_safe(pid2, &status, 0) < 0 ) return -1;
+	if (waitpid_safe(pid1, &status, 0) < 0) return -1;
+	if (waitpid_safe(pid2, &status, 0) < 0) return -1;
 	
 	/* Closing the pipe */
 	if (close_safe(pfds[0], false) < 0) return -1;
@@ -331,7 +331,7 @@ static int handle_output_redirection(int count, char** arglist) {
 	}
 	
 	/* Wait for process to finish */
-	if ( waitpid_safe(pid, &status, 0) < 0 ) return -1;
+	if (waitpid_safe(pid, &status, 0) < 0) return -1;
 	
 	/* Closing the output file */
 	if (close_safe(output_fd, false) < 0) return -1;
@@ -359,7 +359,7 @@ static int handle_regular(int count, char** arglist) {
 	}
 	
 	/* Waiting for the created foreground child process to exit */
-	if (waitpid_safe(pid, &status, 0) < 0 ) return -1; 
+	if (waitpid_safe(pid, &status, 0) < 0) return -1; 
 	
 	return 0;
 }
