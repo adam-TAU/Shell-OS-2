@@ -1,1 +1,6 @@
 *.out
+test
+out
+out*
+test*
+
