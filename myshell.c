@@ -6,6 +6,8 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <signal.h>
+
 
 /* Auxiliary macros */
 #define bool int
@@ -32,6 +34,48 @@
 
 
 
+/***************** INSTRUCTIONS THAT HAVE YET TO BE HANDLED/UNDERSTANDED *****************
+
+1. User commands might be invalid (e.g., a non-existing program or redirecting to a file without
+write permission). Such cases should be treated as an error in the child process (i.e., they must
+not terminate the shell).
+
+2. Assume that the results of the provided parser are correct.
+
+3. Actual implementations of the operations:
+	
+	b. Assume background processes don’t read input (stdin).
+	
+	c. Use the same array for all execvp() calls by referencing items in arglist. There’s no need
+	to allocate a new array and duplicate parts of the original array.
+	
+	d. If arglist contains the word "|" (a single pipe symbol), run two child processes, with the
+	output (stdout) of the first process (executing the command that appears before the pipe)
+	piped to the input (stdin) of the second process (executing the command that appears after
+	the pipe).
+	
+
+4. figure out the use for wait and waitpid
+
+5. If an error occurs in a signal handler in the shell parent process, there’s no need to notify
+process_arglist(). Just print a proper error message and terminate the shell process with
+exit(1).
+
+6. If wait/waitpid in the shell parent process return an error for one of the following reasons, it is
+not considered an actual error that requires exiting the shell:
+• ECHILD
+• EINTR. (You can also avoid an EINTR “error” in the first place. Hint: read about the
+SA_RESTART option in sigaction.)
+
+7. In the original (shell/parent) process, process_arglist() should return 1 if no error occurs. (This
+makes sure the shell continues processing user commands.) If process_arglist() encounters an
+error, it should print an error message and return 0. (See below for what constitutes an error.)
+
+8. The process_arglist() function should not return until every foreground child process it
+created exits.
+
+****************************************************************************************/
+
 
 // arglist - a list of char* arguments (words) provided by the user
 // it contains count+1 items, where the last item (arglist[count]) and *only* the last is NULL
@@ -45,11 +89,36 @@ int finalize(void);
 
 /******************* STATIC FUNCTION DECLARATIONS *******************/
 
-/* This function gets a file descriptor, and if it's non-negative, it tries to close it */
-static void close_safe(int fd, bool is_child);
+/* Duplicates file descriptor safely.
+ * On error, terminates process if is a child process.
+ * Returns 0 on success and -1 on failure. */
+static int dup2_safe(int new_fd, int old_fd, bool is_child);
 
-/* Print an error, and if this function was called from a child process, also exit(1) it */
+/* Opens a file safely. 
+ * On error, terminates process if is a child process.
+ * Returns the file descriptor on success and -1 on failure. */
+static int open_safe(char* filename, bool is_child);
+
+/* This function gets a file descriptor, and if it's non-negative, it tries to close it safely.
+ * On error, terminates a process if is a child process.
+ * Returns 0 on success and -1 on failure. */
+static int close_safe(int fd, bool is_child);
+
+/* Print an error, and if this function was called from a child process, also exit(1) it.
+ * In case <is_child> is true, any errors will terminate the calling process. */
 static void print_err(char* error_message, bool is_child);
+
+/* Given a command line argument array (including the binary's name), execute it with its arguments as a child process.
+ * IF the given <output_fd> is lower than 0, then the output should go out to stdout.
+ * ELSE, the output should be redirected to <output_fd>.
+ * 
+ * IF the given <input_fd> is lower than 0, then the input should go out to stdin.
+ * ELSE, the input should be redirected to <input_fd>.
+ *
+ * This function returns a negative number in case of an error. 
+ * ELSE, this function returns the process id of the child process it has created.
+ */
+static pid_t execute(char** argv, bool background, int output_fd, int input_fd);
 
 /* Check if the string array contains the given string. Definitions:
    1. In case the string is "&", it must be the last non-NULL string in arglist
@@ -66,28 +135,46 @@ static int contains(int count, char** arglist, char* string);
  * If the returned integer is higher than count, then that is an undefined behavior.
  */
 static int index_of(int count, char** arglist, char* string);
-
-/* Given a command line argument array (including the binary's name), execute it with its arguments as a child process.
- * IF the given <output_file> == NULL, then the output should go out to stdout.
- * ELSE, the output should be redirected to <output_file>.
- * 
- * IF the given <input_file> == NULL, then the input should go out to stdin.
- * ELSE, the input should be redirected to <input_file>.
- */
-static int execute(char** argv, bool background, char* output_file, char* input_file);
 /********************************************************************/
 
 
 
 
-/******************** STATIC FUNCTION DEFINITIONS ********************/
+/******************** STATIC MECHANISM'S FUNCTION DEFINITIONS ********************/
 
-static void close_safe(int fd, bool is_child) {
+static int dup2_safe(int new_fd, int old_fd, bool is_child) {
+	if (dup2(new_fd, old_fd) < 0) {
+		print_err(DUP_ERR, is_child);
+		return -1;
+	}
+	
+	return 0;
+} 
+
+static int open_safe(char* filename, bool is_child) {
+	int fd = -1;
+	
+	if (filename != NULL) {
+		fd = open(filename, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR); 
+		
+		if (fd < 0) {
+			print_err(OPEN_ERR, is_child);
+			return -1;
+		}
+	}
+	
+	return fd;
+}
+
+static int close_safe(int fd, bool is_child) {
 	if (fd >= 0) {
 		if (close(fd) < 0) {
 			print_err(CLOSE_ERR, is_child);
+			return -1;
 		}
 	}
+	
+	return 0;
 }
 
 static void print_err(char* error_message, bool is_child) {
@@ -103,7 +190,7 @@ static int contains(int count, char** arglist, char* string) {
 		return strcmp(arglist[count - 1], "&");
 	} else if (strcmp(string, ">>")) {
 		return strcmp(arglist[count - 2], ">>");
-	} else {
+	} else { // if it's a pipe operation, or a non "output redirection" / "background process", then the placement will be random
 		return index_of(count, arglist, string);
 	}
 }
@@ -120,62 +207,46 @@ static int index_of(int count, char** arglist, char* string) {
 	return -1;
 }
 
-static int execute(char** argv, bool background, char* output_file, char* input_file) {
+static pid_t execute(char** argv, bool background, int output_fd, int input_fd) {
 	/* This functions's implementation is inspired by: http://www.csl.mtu.edu/cs4411.ck/www/NOTES/process/fork/exec.html */
 	pid_t  pid;
 	int status;
-	int out_fd = -1;
-	int in_fd = -1;
 
-	if ((pid = fork()) < 0) {     /* fork a child process           */
+	if ((pid = fork()) < 0) { // fork a child process:
 		print_err("*** ERROR: forking child process failed\n", false);
+		return -1;
 	}
-	else if (pid == 0) {          /* for the child process:         */
-		
-		/* Redirect output file */
-		if (output_file != NULL) {
-			out_fd = open(output_file, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR); 
-			
-			if (out_fd < 0) { // Error with opening file
-				print_err(OPEN_ERR, true);
-			}
-			if (dup2(out_fd, STDOUT_FILENO) < 0) { // Error with duplicating a file descriptor
-				print_err(DUP_ERR, true);
-			}
+	else if (pid == 0) { // for the child process:
+		if (dup2_safe(output_fd, STDOUT_FILENO, true) < 0) { // redirect output file
+			return -1;
+		}
+		if (dup2_safe(input_fd, STDIN_FILENO, true) < 0) { // redirect input file
+			return -1;
 		}
 		
-		/* Redirect input file */
-		if (input_file != NULL) {
-			in_fd = open(input_file, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-			
-			if (in_fd < 0) { // Error with opening file
-				print_err(OPEN_ERR, true);
-			}
-			if (dup2(in_fd, STDIN_FILENO) < 0) { // Error with duplicating a file descriptor
-				print_err(DUP_ERR, true);
-			}
+		if (background) { // background processes shouldn't be affected by SIGINT
+			signal(SIGINT, SIG_IGN);
+		} else { // foreground processes should be terminated upon a SIGINT signal
+			signal(SIGINT, SIG_DFL);
 		}
 		
 		/* Execute */
 		if (execvp(*argv, argv) < 0) {     /* execute the command  */
-			if (out_fd != -1) close(out_fd);
-			if (in_fd != -1) close(in_fd);
 			print_err("*** ERROR: exec failed\n", true);
 			exit(1);
 		}
 	
 	}
-	else if (!background) {                    /* for the parent:      */
-		while (wait(&status) != pid);       /* wait for completion  */
-		
-		/* Closing the input/output files that were for the purpose of redirection, if any were used */
-		close_safe(out_fd, false);
-		close_safe(in_fd, false);
+	else if (!background) { // for the parent:
+		while (wait(&status) != pid); // wait for completion 
 	}
 
-	return 0;
+	return pid;
 }
-/******************************/
+/***************************************************************/
+
+
+/***************************** STATIC AUXILIARY FUNCTION DEFINITIONS ****************************/
 
 
 
@@ -184,12 +255,74 @@ static int execute(char** argv, bool background, char* output_file, char* input_
 
 /******************* MAIN MECHANISM's FUNCTION DEFINITIONS *******************/
 int process_arglist(int count, char** arglist) {
-	return 0;
+	
+	int index;
+	
+	if ( (index = contains(count, arglist, "&")) >= 0 ) { // a background process
+		arglist[count - 1] = NULL; // removing "&" from the arglist
+		
+		if (execute(arglist, true, -1, -1) < 0) { // executing the program as a background process without output/input redirections
+			return 0;
+		}
+		
+	} else if ( (index = contains(count, arglist, "|")) >= 0 ) { // piped processes running concurrently
+		pid_t pid1, pid2;
+		int status;
+		
+		/* Creating the pipe named <pfds> */
+		int pfds[2];
+		pipe(pfds);
+		
+		/* Executing the first program */
+		arglist[index] = NULL; // nullifying the arglist at the pipe stage, so that the first process would see it as the end of its command line argument list
+		if ( (pid1 = execute(arglist, true, pfds[1], -1)) < 0) { // executing the program as a background process with its output redirected to the pipe[1] writing pipe
+			return 0;
+		}
+		
+		/* Executing the second program */
+		if ( (pid2 = execute(arglist + index + 1, true, -1, pfds[0])) < 0) { // executing the program as a background process with its input redirected to the pipe[0] reading pipe
+			return 0;
+		}
+		
+		/* Waiting for both processes to finish */
+		waitpid(pid1, &status, 0);
+		waitpid(pid2, &status, 0);
+		
+		/* Closing the pipe */
+		if (close_safe(pfds[0], false) < 0) return -1;
+		if (close_safe(pfds[1], false) < 0) return -1;
+
+	} else if ( (index = contains(count, arglist, ">>")) >= 0 ) { // output redirection process
+		/* Open the output file */
+		int output_fd;
+		if ( (output_fd = open_safe(arglist[count - 1], false)) < 0) {
+			return -1;
+		}
+		
+		/* Format the arglist according to our needs */
+		arglist[count - 1] = NULL; // the filename
+		arglist[count - 2] = NULL; // the ">>" symbol
+		
+		/* Run the program */
+		if (execute(arglist, false, output_fd, -1) < 0) {
+			return 0;
+		}
+		
+	} else { // regularly executing a program with a non-complex command line argument array
+	
+		if (execute(arglist, false, -1, -1) < 0) {
+			return 0;
+		} 
+	}
+
+	return 1;
 }
 
 
 
 int prepare(void) {
+	signal(SIGCHLD, SIG_IGN); // Silently (and portably) terminate children who had stopped their execution.
+	signal(SIGINT, SIG_IGN); // the parent (shell) should not terminate upon SIGINT.
 	return 0;
 }
 
