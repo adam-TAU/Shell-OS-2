@@ -80,10 +80,10 @@ static int waitpid_safe(pid_t pid, int* status, int options);
  * Returns 0 on success and -1 on failure. */
 static int dup2_safe(int new_fd, int old_fd, bool is_child);
 
-/* Opens a file safely. 
+/* Opens a file safely, at append mode.
  * On error, terminates process if is a child process.
  * Returns the file descriptor on success and -1 on failure. */
-static int open_safe(char* filename, bool is_child);
+static int open_append_safe(char* filename, bool is_child);
 
 /* This function gets a file descriptor, and if it's non-negative, it tries to close it safely.
  * On error, terminates a process if is a child process.
@@ -189,7 +189,7 @@ static int dup2_safe(int new_fd, int old_fd, bool is_child) {
 	return 0;
 } 
 
-static int open_safe(char* filename, bool is_child) {
+static int open_append_safe(char* filename, bool is_child) {
 	int fd = -1;
 	
 	if (filename != NULL) {
@@ -331,7 +331,7 @@ static int handle_output_redirection(int count, char** arglist) {
 
 	/* Open the output file */
 	int output_fd;
-	if ( (output_fd = open_safe(arglist[count - 1], false)) < 0) {
+	if ( (output_fd = open_append_safe(arglist[count - 1], false)) < 0) {
 		return -1;
 	}
 	
