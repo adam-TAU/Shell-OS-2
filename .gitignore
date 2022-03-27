@@ -3,4 +3,5 @@ test
 out
 out*
 test*
-
+root_only
+err.log

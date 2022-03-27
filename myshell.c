@@ -40,16 +40,24 @@
 1. User commands might be invalid (e.g., a non-existing program or redirecting to a file without
 write permission). Such cases should be treated as an error in the child process (i.e., they must
 not terminate the shell).
+--------> make open_append_safe oblivious to permissions denied errors, and errors that don't correspond with actual problems with opening a file.
 
 2. If an error occurs in a signal handler in the shell parent process, there’s no need to notify
 process_arglist(). Just print a proper error message and terminate the shell process with
 exit(1).
+--------> need to research on the behavior of sigaction and how child processes inherent it
 
 3. If wait/waitpid in the shell parent process return an error for one of the following reasons, it is
 not considered an actual error that requires exiting the shell:
-• ECHILD
+• ECHILD						 ------> No child processes to the parent
 • EINTR. (You can also avoid an EINTR “error” in the first place. Hint: read about the
-SA_RESTART option in sigaction.)
+SA_RESTART option in sigaction.) ------> EINTR is what happens when we call a system-call and hardware or some outsider interrupts our system-call.
+										 Then, the system-call stop mid-run. Hence, we createa a handler for EINTR, so that whenever it occurs, a SA_RESTART flag,
+										 causes the running to re-occur, eliminating undefined behaviors.  
+
+4. If an error occurs in the shell parent process, there’s no need to notify any running child processes.
+
+5. figure out how to figure out if the one calling for the signal handler, is a parent process or not (perhaps by checking the process id?)
 
 
 *** Implement a personal handler for SIGCHLD.
