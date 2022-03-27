@@ -168,7 +168,7 @@ static int handle_regular(int count, char** arglist);
 
 /*************************** STATIC AUXILIARY FUNCTION DEFINITIONS ***************************/
 
-static int waitpid_safe(pid_t pid, int* status, int options) {
+static int waitpid_safe(pid_t pid, int* status, int options) { /* not finished */
 	int wait_status;
 	
 	if ( (wait_status = waitpid(pid, status, 0)) < 0 ) {
@@ -193,7 +193,8 @@ static int open_safe(char* filename, bool is_child) {
 	int fd = -1;
 	
 	if (filename != NULL) {
-		fd = open(filename, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR); 
+		/* creating/opening a file with read and write permissions, at an append mode. */
+		fd = open(filename, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
 		
 		if (fd < 0) {
 			print_err(OPEN_ERR, is_child);
@@ -418,7 +419,7 @@ int process_arglist(int count, char** arglist) {
 
 
 
-int prepare(void) {
+int prepare(void) { /* not finished */
 	struct sigaction sa_child;
 	sa_child.sa_handler = child_signal_handler;
 
