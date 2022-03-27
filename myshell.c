@@ -167,6 +167,14 @@ static int handle_regular(int count, char** arglist);
 
 
 /*************************** STATIC AUXILIARY FUNCTION DEFINITIONS ***************************/
+static void print_err(char* error_message, bool is_child) {
+	fprintf(stderr, error_message);
+	fprintf(stderr, ". Strerror says: %s\n", strerror(errno));
+	
+	if (is_child) {
+		exit(1);
+	}
+}
 
 static int waitpid_safe(pid_t pid, int* status, int options) { /* not finished */
 	int wait_status;
@@ -216,32 +224,26 @@ static int close_safe(int fd, bool is_child) {
 	return 0;
 }
 
-static void print_err(char* error_message, bool is_child) {
-	fprintf(stderr, error_message);
-	
-	if (is_child) {
-		exit(1);
-	}
-}
-
 static int contains(int count, char** arglist, char* string) {
-	if (strcmp(string, "&") == 0) {
-		if ( strcmp(arglist[count - 1], "&") == 0 ) {
-			return count - 1;
-		} else {
-			return -1;
+	if (count >= 2) { // a background process or output redirection process must hold more than two words in the command
+		if (strcmp(string, "&") == 0) {
+			if ( strcmp(arglist[count - 1], "&") == 0 ) {
+				return count - 1;
+			} else {
+				return -1;
+			}
+			
+		} else if (strcmp(string, ">>") == 0) {
+			if ( strcmp(arglist[count - 2], ">>") == 0 ) {
+				return count - 2;
+			} else {
+				return -1;
+			}
 		}
-		
-	} else if (strcmp(string, ">>") == 0) {
-		if ( strcmp(arglist[count - 2], ">>") == 0 ) {
-			return count - 2;
-		} else {
-			return -1;
-		}
+	} 
 	
-	} else { // if it's a pipe operation, or a non "output redirection" / "background process", then the placement will be random
-		return index_of(count, arglist, string);
-	}
+	// else: if it's a pipe operation, or a non "output redirection" / "background process", then the placement will be random
+	return index_of(count, arglist, string);
 }
 
 static int index_of(int count, char** arglist, char* string) {
@@ -261,7 +263,7 @@ static pid_t execute(char** argv, bool background, int output_fd, int input_fd) 
 	pid_t  pid;
 
 	if ((pid = fork()) < 0) { // fork a child process:
-		print_err("*** ERROR: forking child process failed\n", false);
+		print_err("*** ERROR: forking child process failed", false);
 		return -1;
 	}
 	else if (pid == 0) { // for the child process:
@@ -280,7 +282,7 @@ static pid_t execute(char** argv, bool background, int output_fd, int input_fd) 
 		
 		/* Execute */
 		if (execvp(*argv, argv) < 0) { // execute the command
-			print_err("*** ERROR: exec failed\n", true);
+			print_err("*** ERROR: exec failed", true);
 		}
 	
 	}
@@ -301,7 +303,10 @@ static int handle_pipe(int count, char** arglist, int index) {
 	
 	/* Creating the pipe named <pfds> */
 	int pfds[2];
-	pipe(pfds);
+	if ( pipe(pfds) < 0 ) {
+		print_err("An error with creating a pipe has occurred", false);
+		return -1;
+	}
 	
 	/* Executing the first program */
 	arglist[index] = NULL; // nullifying the arglist at the pipe stage, so that the first process would see it as the end of its command line argument list
@@ -383,7 +388,9 @@ static int handle_regular(int count, char** arglist) {
 
 /************************** STATIC SIGNAL HANDLERS FUNCTION DEFINITIONS ************************/
 void child_signal_handler(int sig) {
-
+	int status;
+	
+	// while ( wait(&status, WNOHANG) > 0 ) {}
 }
 
 
@@ -420,9 +427,13 @@ int process_arglist(int count, char** arglist) {
 
 
 int prepare(void) { /* not finished */
+
+	/* System calls that are interrupted by signals can either abort and return EINTR or automatically restart themselves if and only if SA_RESTART is specified in sigaction(2) */
+	/*  ECHILD No child processes (POSIX.1-2001). */
+	
 	struct sigaction sa_child;
 	sa_child.sa_handler = child_signal_handler;
-
+	sigaction(SIGCHLD, &sa_child, 0); // process SIGCHLD (rises whenever a child process finishes)
 	signal(SIGINT, SIG_IGN); // the parent (shell) should not terminate upon SIGINT.
 	return 0;
 }
