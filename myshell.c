@@ -42,26 +42,9 @@ write permission). Such cases should be treated as an error in the child process
 not terminate the shell).
 --------> make open_append_safe oblivious to permissions denied errors, and errors that don't correspond with actual problems with opening a file.
 
-2. If an error occurs in a signal handler in the shell parent process, there’s no need to notify
-process_arglist(). Just print a proper error message and terminate the shell process with
-exit(1).
---------> need to research on the behavior of sigaction and how child processes inherent it
+2. figure out how to figure out if the one calling for the signal handler, is a parent process or not (perhaps by checking the process id?)
 
-3. If wait/waitpid in the shell parent process return an error for one of the following reasons, it is
-not considered an actual error that requires exiting the shell:
-• ECHILD						 ------> No child processes to the parent
-• EINTR. (You can also avoid an EINTR “error” in the first place. Hint: read about the
-SA_RESTART option in sigaction.) ------> EINTR is what happens when we call a system-call and hardware or some outsider interrupts our system-call.
-										 Then, the system-call stop mid-run. Hence, we createa a handler for EINTR, so that whenever it occurs, a SA_RESTART flag,
-										 causes the running to re-occur, eliminating undefined behaviors.  
-
-4. If an error occurs in the shell parent process, there’s no need to notify any running child processes.
-
-5. figure out how to figure out if the one calling for the signal handler, is a parent process or not (perhaps by checking the process id?)
-
-
-*** Implement a personal handler for SIGCHLD.
-
+3. Fix the issue with the reading process of the pipe not being able to be terminated upon WAITPID
 
 *********************************************************************************************/
 
@@ -81,7 +64,7 @@ int finalize(void);
 /* Waits for a specific process with the process id: <pid> to end.
  * On success it will return 0, and on failure 1.
  * ECHILD errors are ignored */
-static int waitpid_safe(pid_t pid, int* status, int options);
+static int waitpid_safe(pid_t pid, int* status, int options, bool terminate);
 
 /* Duplicates file descriptor safely.
  * On error, terminates process if is a child process.
@@ -100,7 +83,7 @@ static int close_safe(int fd, bool is_child);
 
 /* Print an error, and if this function was called from a child process, also exit(1) it.
  * In case <is_child> is true, any errors will terminate the calling process. */
-static void print_err(char* error_message, bool is_child);
+static void print_err(char* error_message, bool terminate);
 
 /* Given a command line argument array (including the binary's name), execute it with its arguments as a child process.
  * IF the given <output_fd> is lower than 0, then the output should go out to stdout.
@@ -111,8 +94,12 @@ static void print_err(char* error_message, bool is_child);
  *
  * This function returns a negative number in case of an error. 
  * ELSE, this function returns the process id of the child process it has created.
+ *
+ * If the given <pfsd> isn't equal to NULL, then this execution is of a process
+ * who participates in a pipe. In that case, <pfds>, is the array of pipe file descriptors.
+ * Hence, we'll close both pipe files from the child process once it's done with duplicating the file descriptor it needs.
  */
-static pid_t execute(char** argv, bool background, int output_fd, int input_fd);
+static pid_t execute(char** argv, bool background, int output_fd, int input_fd, int* pfds);
 
 /* Check if the string array contains the given string. Definitions:
    1. In case the string is "&", it must be the last non-NULL string in arglist
@@ -174,21 +161,58 @@ static int handle_regular(int count, char** arglist);
 
 
 
+
+/*************************** STATIC ERROR/SIGNAL HANDLERS FUNCTION DECLARATIONS *********************/
+/* This function defaultizes the handling of SIGINT for the process who summonned its use: I.E. terminate upon SIGINT. */
+int defaultize_sig_int(void);
+
+/* In case a wait/waitpid system call has returned an undefined behavior (a non-positive number):
+ * this handler returns -1
+ * else, on an alleged success, it will return 0 */ 
+int wait_status_handler(int wait_return, bool terminate);
+
+/* In case of a SIGCHLD signal, handle it correspondingly */
+void child_sig_handler(int sig);
+/**********************************************************************************************/
+
+
+
+
+
+
+
+
+
+
+
+/*************************** STATIC VARIABLES (FILE-GLOBAL) *********************/
+
+/* A mask containing only the SIGINT signal */
+sigset_t mask_sig_int;
+
+/* The process id of the shell */
+pid_t shell_pid;
+/********************************************************************************/
+
+
+
+
+
+
 /*************************** STATIC AUXILIARY FUNCTION DEFINITIONS ***************************/
-static void print_err(char* error_message, bool is_child) {
-	fprintf(stderr, error_message);
-	fprintf(stderr, ". Strerror says: %s\n", strerror(errno));
+static void print_err(char* error_message, bool terminate) {
+	perror(error_message); // this basically prints error_message, with <strerror(errno)> appended to it */
 	
-	if (is_child) {
+	if (terminate) {
 		exit(1);
 	}
 }
 
-static int waitpid_safe(pid_t pid, int* status, int options) { /* not finished */
-	int wait_status;
-	
-	if ( (wait_status = waitpid(pid, status, 0)) < 0 ) {
-		
+static int waitpid_safe(pid_t pid, int* status, int options, bool terminate) { /* not finished */
+
+	int wait_status = waitpid(pid, status, options);
+	if (wait_status_handler(wait_status, terminate) < 0) {
+		return -1;
 	}
 	
 	return 0;
@@ -266,7 +290,7 @@ static int index_of(int count, char** arglist, char* string) {
 	return -1;
 }
 
-static pid_t execute(char** argv, bool background, int output_fd, int input_fd) {
+static pid_t execute(char** argv, bool background, int output_fd, int input_fd, int* pfds) {
 	/* This functions's implementation is inspired by: http://www.csl.mtu.edu/cs4411.ck/www/NOTES/process/fork/exec.html */
 	pid_t  pid;
 
@@ -275,6 +299,8 @@ static pid_t execute(char** argv, bool background, int output_fd, int input_fd) 
 		return -1;
 	}
 	else if (pid == 0) { // for the child process:
+
+		/* Duplicate the necessary file descriptors */
 		if (dup2_safe(output_fd, STDOUT_FILENO, true) < 0) { // redirect output file
 			return -1;
 		}
@@ -282,10 +308,19 @@ static pid_t execute(char** argv, bool background, int output_fd, int input_fd) 
 			return -1;
 		}
 		
-		if (background) { // background processes shouldn't be affected by SIGINT
-			signal(SIGINT, SIG_IGN);
-		} else { // foreground processes should be terminated upon a SIGINT signal
-			signal(SIGINT, SIG_DFL);
+		/* Close the unnecessary files (since duplicating a file descriptor makes the duplicated one unncessary) */
+		if (pfds != NULL) { // In case the child process is a piped process
+			if (close_safe(pfds[0], true) < 0) return -1; // close the original pipe input file descriptor
+			if (close_safe(pfds[1], true) < 0) return -1; // close the original pipe output file descriptor
+			
+		} else { // otherwise, just close the output/input redirections
+			if (close_safe(output_fd, true) < 0) return -1; // close the original output file descriptor
+			if (close_safe(input_fd, true) < 0) return -1; // close the original input file descriptor
+		}
+		
+		/* Foreground processes should be terminated upon a SIGINT signal */
+		if (!background) {
+			defaultize_sig_int();
 		}
 		
 		/* Execute */
@@ -304,10 +339,14 @@ static pid_t execute(char** argv, bool background, int output_fd, int input_fd) 
 
 
 
+
+
+
+
+
 /***************************** STATIC MAIN MECHANISM'S FUNCTION DEFINITIONS ****************************/
 static int handle_pipe(int count, char** arglist, int index) {
 	pid_t pid1, pid2;
-	int status;
 	
 	/* Creating the pipe named <pfds> */
 	int pfds[2];
@@ -318,18 +357,19 @@ static int handle_pipe(int count, char** arglist, int index) {
 	
 	/* Executing the first program */
 	arglist[index] = NULL; // nullifying the arglist at the pipe stage, so that the first process would see it as the end of its command line argument list
-	if ( (pid1 = execute(arglist, true, pfds[1], -1)) < 0) { // executing the program as a background process with its output redirected to the pipe[1] writing pipe
+	if ( (pid1 = execute(arglist, false, pfds[1], -1, pfds)) < 0) { // output redirected to the pipe[1] writing pipe
 		return -1;
 	}
 	
 	/* Executing the second program */
-	if ( (pid2 = execute(arglist + index + 1, true, -1, pfds[0])) < 0) { // executing the program as a background process with its input redirected to the pipe[0] reading pipe
+	if ( (pid2 = execute(arglist + index + 1, false, -1, pfds[0], pfds)) < 0) { // input redirected to the pipe[0] reading pipe
 		return -1;
 	}
 	
 	/* Waiting for both processes to finish */
-	if (waitpid_safe(pid1, &status, 0) < 0) return -1;
-	if (waitpid_safe(pid2, &status, 0) < 0) return -1;
+	if (waitpid_safe(pid1, NULL, 0, true) < 0) return -1;
+	if (waitpid_safe(pid2, NULL, 0, true) < 0) return -1; // !! PROBLEM HERE
+	printf("reached here3\n");
 	
 	/* Closing the pipe */
 	if (close_safe(pfds[0], false) < 0) return -1;
@@ -340,7 +380,6 @@ static int handle_pipe(int count, char** arglist, int index) {
 
 static int handle_output_redirection(int count, char** arglist) {
 	pid_t pid; 
-	int status;
 
 	/* Open the output file */
 	int output_fd;
@@ -353,12 +392,12 @@ static int handle_output_redirection(int count, char** arglist) {
 	arglist[count - 2] = NULL; // the ">>" symbol
 	
 	/* Run the program */
-	if ( (pid = execute(arglist, false, output_fd, -1)) < 0) {
+	if ( (pid = execute(arglist, false, output_fd, -1, NULL)) < 0) {
 		return -1;
 	}
 	
 	/* Wait for process to finish */
-	if (waitpid_safe(pid, &status, 0) < 0) return -1;
+	if (waitpid_safe(pid, NULL, 0, true) < 0) return -1;
 	
 	/* Closing the output file */
 	if (close_safe(output_fd, false) < 0) return -1;
@@ -369,7 +408,7 @@ static int handle_output_redirection(int count, char** arglist) {
 
 static int handle_background(int count, char** arglist) {
 	arglist[count - 1] = NULL; // removing "&" from the arglist
-	if (execute(arglist, true, -1, -1) < 0) { // executing the program as a background process without output/input redirections
+	if (execute(arglist, true, -1, -1, NULL) < 0) { // executing the program as a background process without output/input redirections
 		return -1;
 	}
 	// no need to wait for the process to end since it's a background process
@@ -378,15 +417,14 @@ static int handle_background(int count, char** arglist) {
 
 static int handle_regular(int count, char** arglist) {
 	pid_t pid;
-	int status;
 	
 	/* Executing the regular command */
-	if ( (pid = execute(arglist, false, -1, -1)) < 0) {
+	if ( (pid = execute(arglist, false, -1, -1, NULL)) < 0) {
 		return -1;
 	}
 	
 	/* Waiting for the created foreground child process to exit */
-	if (waitpid_safe(pid, &status, 0) < 0) return -1; 
+	if (waitpid_safe(pid, NULL, 0, true) < 0) return -1; 
 	
 	return 0;
 }
@@ -394,12 +432,47 @@ static int handle_regular(int count, char** arglist) {
 
 
 
-/************************** STATIC SIGNAL HANDLERS FUNCTION DEFINITIONS ************************/
-void child_signal_handler(int sig) {
-	int status;
+
+
+
+
+
+/*************************** STATIC ERROR/SIGNAL HANDLERS FUNCTION DECLARATIONS *********************/
+int defaultize_sig_int(void) {
+	struct sigaction sa_int;
+	sa_int.sa_handler = SIG_DFL; // make the handling of SIGINT default again (I.E. terminate upon a SIGINT)
+	sa_int.sa_flags = SA_RESTART;
+	if ( sigaction(SIGINT, &sa_int, 0) < 0 ) { // process SIGINT
+		print_err("An error has occurred with a handling of SIGINT", true);
+	}
 	
-	// while ( wait(&status, WNOHANG) > 0 ) {}
+	return 0;
 }
+
+int wait_status_handler(int wait_status, bool terminate) {
+	if (wait_status <= 0) { // in case wait_status = -1, it means an error has occurred. in case wait_status = 0, it means WNOHANG had no children to reap through.
+		if (wait_status == ECHILD) {
+			print_err("An error with reaping child processes has occurred", terminate); 
+		} else if (wait_status == EINTR) {
+			print_err("Critical error. EINTR error - impossible with our behavior of singal handlers", terminate);
+		}
+		return -1;
+	}
+	
+	return 0;
+}
+
+
+void child_sig_handler(int sig) {
+	/* reap through children processes, since signals aren't queued, hence:
+	 * addition SIGCHLD might get overrided by the running of this handler, so:
+	 * we'll try and wait for all child processes, with the option "WNOHANG", which doesn't wait for the child process to terminate */
+	while ( waitpid_safe(-1, NULL, WNOHANG, true) >= 0 ) {}
+}
+/**********************************************************************************************/
+
+
+
 
 
 
@@ -435,14 +508,31 @@ int process_arglist(int count, char** arglist) {
 
 
 int prepare(void) { /* not finished */
-
+	/* Adding the SA_RESTART flag to every signal handler, will conclude in the restart of every function interrupted by some signal handler, eliminating the EINTR interruption handling */
 	/* System calls that are interrupted by signals can either abort and return EINTR or automatically restart themselves if and only if SA_RESTART is specified in sigaction(2) */
-	/*  ECHILD No child processes (POSIX.1-2001). */
 	
+	/* SIGCHLD handler configuration */
 	struct sigaction sa_child;
-	sa_child.sa_handler = child_signal_handler;
-	sigaction(SIGCHLD, &sa_child, 0); // process SIGCHLD (rises whenever a child process finishes)
-	signal(SIGINT, SIG_IGN); // the parent (shell) should not terminate upon SIGINT.
+	sa_child.sa_handler = child_sig_handler;
+	sa_child.sa_flags = SA_RESTART; // | SA_NOCLDSTOP;
+	if ( sigaction(SIGCHLD, &sa_child, 0) < 0 ) { // process SIGCHLD (rises whenever a child process terminates)
+		print_err("An error has occurred with setting a singla handler", false);
+		return -1;
+	}
+	
+	/* SIGINT handler configuration */
+	struct sigaction sa_int;
+	sa_int.sa_handler = SIG_IGN;
+	sa_int.sa_flags = SA_RESTART;
+	if( sigaction(SIGINT, &sa_int, 0) < 0 ) { // process SIGINT
+		print_err("An error has occurred with setting a singla handler", false);
+		return -1;
+	}
+	
+	/* Initialize the shell_pid variable */
+	shell_pid = getpid();
+	
+	/* Return value */
 	return 0;
 }
 

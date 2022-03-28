@@ -5,3 +5,7 @@ out*
 test*
 root_only
 err.log
+*test
+*out
+*test*
+*out*
