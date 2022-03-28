@@ -196,7 +196,9 @@ pid_t shell_pid;
 
 /*************************** STATIC AUXILIARY FUNCTION DEFINITIONS ***************************/
 static void print_err(char* error_message, bool terminate) {
+	int tmp_errno = errno;
 	perror(error_message); // this basically prints error_message, with <strerror(errno)> appended to it */
+	errno = tmp_errno;
 	
 	if (terminate) {
 		exit(1);
@@ -379,6 +381,7 @@ static int handle_output_redirection(int count, char** arglist) {
 	/* Open the output file */
 	int output_fd;
 	if ( (output_fd = open_append_safe(arglist[count - 1], false)) < 0) {
+		
 		if (errno == EACCES) { // permisions denied issue: a child process's error
 			return 0;
 		} else { // error that isn't user-dependent
