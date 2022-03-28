@@ -362,8 +362,8 @@ static int handle_pipe(int count, char** arglist, int index) {
 	}
 	
 	/* Waiting for both processes to finish */
-	if (waitpid_safe(pid1, NULL, 0, true) < 0) return -1;
-	if (waitpid_safe(pid2, NULL, 0, true) < 0) return -1; // !! PROBLEM HERE
+	if (waitpid_safe(pid1, NULL, 0, false) < 0) return -1;
+	if (waitpid_safe(pid2, NULL, 0, false) < 0) return -1; // !! PROBLEM HERE
 	printf("reached here3\n");
 	
 	/* Closing the pipe */
@@ -378,8 +378,12 @@ static int handle_output_redirection(int count, char** arglist) {
 
 	/* Open the output file */
 	int output_fd;
-	if ( (output_fd = open_append_safe(arglist[count - 1], true)) < 0) {
-		return -1;
+	if ( (output_fd = open_append_safe(arglist[count - 1], false)) < 0) {
+		if (errno == EACCES) { // permisions denied issue: a child process's error
+			return 0;
+		} else { // error that isn't user-dependent
+			return -1;
+		}
 	}
 	
 	/* Format the arglist according to our needs */
@@ -392,7 +396,7 @@ static int handle_output_redirection(int count, char** arglist) {
 	}
 	
 	/* Wait for process to finish */
-	if (waitpid_safe(pid, NULL, 0, true) < 0) return -1;
+	if (waitpid_safe(pid, NULL, 0, false) < 0) return -1;
 	
 	/* Closing the output file */
 	if (close_safe(output_fd, false) < 0) return -1;
@@ -419,7 +423,7 @@ static int handle_regular(int count, char** arglist) {
 	}
 	
 	/* Waiting for the created foreground child process to exit */
-	if (waitpid_safe(pid, NULL, 0, true) < 0) return -1; 
+	if (waitpid_safe(pid, NULL, 0, false) < 0) return -1; 
 	
 	return 0;
 }
