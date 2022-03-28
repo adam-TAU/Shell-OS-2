@@ -37,14 +37,9 @@
 
 /***************** INSTRUCTIONS THAT HAVE YET TO BE HANDLED/UNDERSTANDED *****************
 
-1. User commands might be invalid (e.g., a non-existing program or redirecting to a file without
-write permission). Such cases should be treated as an error in the child process (i.e., they must
-not terminate the shell).
---------> make open_append_safe oblivious to permissions denied errors, and errors that don't correspond with actual problems with opening a file.
+1. figure out how to figure out if the one calling for the signal handler, is a parent process or not (perhaps by checking the process id?)
 
-2. figure out how to figure out if the one calling for the signal handler, is a parent process or not (perhaps by checking the process id?)
-
-3. Fix the issue with the reading process of the pipe not being able to be terminated upon WAITPID
+2. Fix the issue with the reading process of the pipe not being able to be terminated upon WAITPID
 
 *********************************************************************************************/
 
@@ -69,20 +64,20 @@ static int waitpid_safe(pid_t pid, int* status, int options, bool terminate);
 /* Duplicates file descriptor safely.
  * On error, terminates process if is a child process.
  * Returns 0 on success and -1 on failure. */
-static int dup2_safe(int new_fd, int old_fd, bool is_child);
+static int dup2_safe(int new_fd, int old_fd, bool terminate);
 
 /* Opens a file safely, at append mode.
  * On error, terminates process if is a child process.
  * Returns the file descriptor on success and -1 on failure. */
-static int open_append_safe(char* filename, bool is_child);
+static int open_append_safe(char* filename, bool terminate);
 
 /* This function gets a file descriptor, and if it's non-negative, it tries to close it safely.
  * On error, terminates a process if is a child process.
  * Returns 0 on success and -1 on failure. */
-static int close_safe(int fd, bool is_child);
+static int close_safe(int fd, bool terminate);
 
 /* Print an error, and if this function was called from a child process, also exit(1) it.
- * In case <is_child> is true, any errors will terminate the calling process. */
+ * In case <terminate> is true, any errors will terminate the calling process. */
 static void print_err(char* error_message, bool terminate);
 
 /* Given a command line argument array (including the binary's name), execute it with its arguments as a child process.
@@ -218,10 +213,10 @@ static int waitpid_safe(pid_t pid, int* status, int options, bool terminate) { /
 	return 0;
 }
 
-static int dup2_safe(int new_fd, int old_fd, bool is_child) {
+static int dup2_safe(int new_fd, int old_fd, bool terminate) {
 	if (new_fd >= 0) {
 		if (dup2(new_fd, old_fd) < 0) {
-			print_err(DUP_ERR, is_child);
+			print_err(DUP_ERR, terminate);
 			return -1;
 		}
 	}
@@ -229,7 +224,7 @@ static int dup2_safe(int new_fd, int old_fd, bool is_child) {
 	return 0;
 } 
 
-static int open_append_safe(char* filename, bool is_child) {
+static int open_append_safe(char* filename, bool terminate) {
 	int fd = -1;
 	
 	if (filename != NULL) {
@@ -237,7 +232,7 @@ static int open_append_safe(char* filename, bool is_child) {
 		fd = open(filename, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
 		
 		if (fd < 0) {
-			print_err(OPEN_ERR, is_child);
+			print_err(OPEN_ERR, terminate);
 			return -1;
 		}
 	}
@@ -245,10 +240,10 @@ static int open_append_safe(char* filename, bool is_child) {
 	return fd;
 }
 
-static int close_safe(int fd, bool is_child) {
+static int close_safe(int fd, bool terminate) {
 	if (fd >= 0) {
 		if (close(fd) < 0) {
-			print_err(CLOSE_ERR, is_child);
+			print_err(CLOSE_ERR, terminate);
 			return -1;
 		}
 	}
@@ -383,7 +378,7 @@ static int handle_output_redirection(int count, char** arglist) {
 
 	/* Open the output file */
 	int output_fd;
-	if ( (output_fd = open_append_safe(arglist[count - 1], false)) < 0) {
+	if ( (output_fd = open_append_safe(arglist[count - 1], true)) < 0) {
 		return -1;
 	}
 	
