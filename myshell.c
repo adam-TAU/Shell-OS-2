@@ -169,23 +169,6 @@ void child_sig_handler(int sig);
 
 
 
-
-
-
-/*************************** STATIC VARIABLES (FILE-GLOBAL) *********************/
-
-/* A mask containing only the SIGINT signal */
-sigset_t mask_sig_int;
-
-/* The process id of the shell */
-pid_t shell_pid;
-/********************************************************************************/
-
-
-
-
-
-
 /*************************** STATIC AUXILIARY FUNCTION DEFINITIONS ***************************/
 static void print_err(char* error_message, bool terminate) {
 	int tmp_errno = errno;
@@ -517,9 +500,6 @@ int prepare(void) { /* not finished */
 		print_err("An error has occurred with setting a singal handler", false);
 		return -1;
 	}
-	
-	/* Initialize the shell_pid variable */
-	shell_pid = getpid();
 	
 	/* Return value */
 	return 0;
