@@ -39,8 +39,6 @@
 
 1. figure out how to figure out if the one calling for the signal handler, is a parent process or not (perhaps by checking the process id?)
 
-2. Fix the issue with the reading process of the pipe not being able to be terminated upon WAITPID
-
 *********************************************************************************************/
 
 
@@ -161,10 +159,12 @@ static int handle_regular(int count, char** arglist);
 /* This function defaultizes the handling of SIGINT for the process who summonned its use: I.E. terminate upon SIGINT. */
 int defaultize_sig_int(void);
 
-/* In case a wait/waitpid system call has returned an undefined behavior (a non-positive number):
- * this handler returns -1
- * else, on an alleged success, it will return 0 */ 
-int wait_status_handler(int wait_return, bool terminate);
+/* This function returns exactly what wait_status equals to, excluding the following cases:'
+ * we'll return 0 if wait_status is negative, implying an error, tho the errno-s are one of the following:
+ * 		ECHILD
+ *		EINTR
+ * In any other case, we'll return wait_status. */
+int wait_status_handler(int wait_status, bool terminate);
 
 /* In case of a SIGCHLD signal, handle it correspondingly */
 void child_sig_handler(int sig);
@@ -208,11 +208,7 @@ static void print_err(char* error_message, bool terminate) {
 static int waitpid_safe(pid_t pid, int* status, int options, bool terminate) { /* not finished */
 
 	int wait_status = waitpid(pid, status, options);
-	if (wait_status_handler(wait_status, terminate) < 0) {
-		return -1;
-	}
-	
-	return 0;
+	return wait_status_handler(wait_status, terminate);
 }
 
 static int dup2_safe(int new_fd, int old_fd, bool terminate) {
@@ -324,7 +320,6 @@ static pid_t execute(char** argv, bool background, int output_fd, int input_fd, 
 		if (execvp(*argv, argv) < 0) { // execute the command
 			print_err("*** ERROR: exec failed", true);
 		}
-	
 	}
 
 	return pid;
@@ -363,14 +358,15 @@ static int handle_pipe(int count, char** arglist, int index) {
 		return -1;
 	}
 	
-	/* Waiting for both processes to finish */
-	if (waitpid_safe(pid1, NULL, 0, false) < 0) return -1;
-	if (waitpid_safe(pid2, NULL, 0, false) < 0) return -1; // !! PROBLEM HERE
-	printf("reached here3\n");
-	
 	/* Closing the pipe */
 	if (close_safe(pfds[0], false) < 0) return -1;
 	if (close_safe(pfds[1], false) < 0) return -1;
+	
+	/* Waiting for both processes to finish */
+	if (waitpid_safe(pid1, NULL, 0, false) < 0) return -1;
+	if (waitpid_safe(pid2, NULL, 0, false) < 0) return -1;
+	
+
 	
 	return 0;
 }
@@ -452,16 +448,15 @@ int defaultize_sig_int(void) {
 }
 
 int wait_status_handler(int wait_status, bool terminate) {
-	if (wait_status <= 0) { // in case wait_status = -1, it means an error has occurred. in case wait_status = 0, it means WNOHANG had no children to reap through.
-		if (wait_status == ECHILD) {
-			print_err("An error with reaping child processes has occurred", terminate); 
-		} else if (wait_status == EINTR) {
-			print_err("Critical error. EINTR error - impossible with our behavior of singal handlers", terminate);
+	if (wait_status < 0) { // in case wait_status = -1, it means an error has occurred. in case wait_status = 0, it means WNOHANG had no children to reap through.
+		if (errno == ECHILD || errno == EINTR) {
+			return 0;
 		}
+		
+		print_err("An error has occurred with waiting for a child process", false);
 		return -1;
-	}
-	
-	return 0;
+	} 
+	return wait_status;
 }
 
 
@@ -469,7 +464,7 @@ void child_sig_handler(int sig) {
 	/* reap through children processes, since signals aren't queued, hence:
 	 * addition SIGCHLD might get overrided by the running of this handler, so:
 	 * we'll try and wait for all child processes, with the option "WNOHANG", which doesn't wait for the child process to terminate */
-	while ( waitpid_safe(-1, NULL, WNOHANG, true) >= 0 ) {}
+	while ( waitpid_safe(-1, NULL, WNOHANG, true) > 0 ) {}
 }
 /**********************************************************************************************/
 
@@ -518,7 +513,7 @@ int prepare(void) { /* not finished */
 	sa_child.sa_handler = child_sig_handler;
 	sa_child.sa_flags = SA_RESTART; // | SA_NOCLDSTOP;
 	if ( sigaction(SIGCHLD, &sa_child, 0) < 0 ) { // process SIGCHLD (rises whenever a child process terminates)
-		print_err("An error has occurred with setting a singla handler", false);
+		print_err("An error has occurred with setting a singal handler", false);
 		return -1;
 	}
 	
@@ -527,7 +522,7 @@ int prepare(void) { /* not finished */
 	sa_int.sa_handler = SIG_IGN;
 	sa_int.sa_flags = SA_RESTART;
 	if( sigaction(SIGINT, &sa_int, 0) < 0 ) { // process SIGINT
-		print_err("An error has occurred with setting a singla handler", false);
+		print_err("An error has occurred with setting a singal handler", false);
 		return -1;
 	}
 	
