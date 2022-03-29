@@ -34,14 +34,6 @@
  */
 
 
-
-/***************** INSTRUCTIONS THAT HAVE YET TO BE HANDLED/UNDERSTANDED *****************
-
-1. figure out how to figure out if the one calling for the signal handler, is a parent process or not (perhaps by checking the process id?)
-
-*********************************************************************************************/
-
-
 // arglist - a list of char* arguments (words) provided by the user
 // it contains count+1 items, where the last item (arglist[count]) and *only* the last is NULL
 // RETURNS - 1 if should continue, 0 otherwise
@@ -511,7 +503,7 @@ int prepare(void) { /* not finished */
 	/* SIGCHLD handler configuration */
 	struct sigaction sa_child;
 	sa_child.sa_handler = child_sig_handler;
-	sa_child.sa_flags = SA_RESTART; // | SA_NOCLDSTOP;
+	sa_child.sa_flags = SA_RESTART | SA_NOCLDSTOP; // https://www.oreilly.com/library/view/hands-on-system-programming/9781788998475/98c55cb6-9049-437e-8f15-d114c590a397.xhtml (explanation for NOCLDSTOP)
 	if ( sigaction(SIGCHLD, &sa_child, 0) < 0 ) { // process SIGCHLD (rises whenever a child process terminates)
 		print_err("An error has occurred with setting a singal handler", false);
 		return -1;
